@@ -1,0 +1,19 @@
+# commit_randomness_script.masm
+
+use.external_contract::uno_contract
+use.std::sys
+
+begin
+    # Stack must be: [c0, c1, c2, c3, player_index]
+
+    push.{COMMITMENT_HASH_A}
+    push.{COMMITMENT_HASH_B}
+    push.{COMMITMENT_HASH_C}
+    push.{COMMITMENT_HASH_D}
+    push.0  # player_index
+
+    call.uno_contract::commit_randomness
+
+    # Clean up any remaining stack items before exit
+    exec.sys::truncate_stack
+end

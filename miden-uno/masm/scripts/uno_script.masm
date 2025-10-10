@@ -1,0 +1,8 @@
+# uno_script.masm
+
+use.external_contract::uno_contract
+
+begin
+    # call the join_game procedure
+    call.uno_contract::join_game
+end

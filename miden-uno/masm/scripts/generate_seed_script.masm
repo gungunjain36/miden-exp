@@ -1,0 +1,5 @@
+use.external_contract::uno_contract
+
+begin
+    call.uno_contract::generate_seed
+end
