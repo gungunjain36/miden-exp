@@ -1,5 +1,4 @@
-# uno.masm
-
+const gameContractCode = `
 use.miden::account
 use.std::sys
 
@@ -88,25 +87,40 @@ end
 # expects: [commitment_word_0, commitment_word_1, commitment_word_2, commitment_word_3, player_index]
 # The commitment is a hash (4 elements).
 export.commit_randomness
-    # expects: [c0, c1, c2, c3, idx]
-    # compute slot = PLAYER_COMMITMENTS_START_SLOT + idx
+    # stack: [c0, c1, c2, c3, idx]
+
+    # Bring idx to the top, compute slot = BASE + idx, drop original idx
+    dup.4
+    # stack: [idx, c0, c1, c2, c3, idx]
     push.PLAYER_COMMITMENTS_START_SLOT
     add
-    # stack now: [c0, c1, c2, c3, slot]
+    # stack: [slot, c0, c1, c2, c3, idx]
+    drop
+    # stack: [slot, c0, c1, c2, c3]
+
+    # Reorder into [c0, c1, c2, c3, slot] for set_item
+    movup.4
+    # stack: [c0, c1, c2, c3, slot]
+
+    # Store the commitment in the calculated slot.
     exec.account::set_item
+    # stack: []
+
     exec.sys::truncate_stack
 end
 
 # Verifies that a provided commitment hash matches the stored commitment for a player.
 # expects: [h0, h1, h2, h3, player_index]
 export.verify_commitment
-    # expects: [h0, h1, h2, h3, idx]
-    # compute slot = PLAYER_COMMITMENTS_START_SLOT + idx
+    # Compute the storage slot for the player's commitment and load it
     push.PLAYER_COMMITMENTS_START_SLOT
     add
     exec.account::get_item
     # stack: [h0, h1, h2, h3, c0, c1, c2, c3]
+
+    # Verify the stored commitment equals the provided commitment
     assert_eqw
+
     exec.sys::truncate_stack
 end
 
@@ -195,16 +209,15 @@ end
 # Stores the revealed secret for a player after commitment verification.
 # expects: [s0, s1, s2, s3, player_index]
 export.store_secret
-    # expects: [s0, s1, s2, s3, idx]
-    # slot = PLAYER_SECRETS_START_SLOT + idx
+    # slot = PLAYER_SECRETS_START_SLOT + player_index
     push.PLAYER_SECRETS_START_SLOT
     add
-    # stack: [s0, s1, s2, s3, slot]
     exec.account::set_item
+
     exec.sys::truncate_stack
 end
 
- 
+
 
 
 # Initializes the deck to a sorted state.
@@ -294,3 +307,6 @@ export.incr_draw_counter
     exec.account::set_item
     exec.sys::truncate_stack
 end
+`;
+
+export default gameContractCode;

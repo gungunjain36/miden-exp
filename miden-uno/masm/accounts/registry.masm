@@ -1,0 +1,32 @@
+# registry.masm — simple active games registry
+
+use.miden::account
+use.std::sys
+
+const.ACTIVE_COUNT_SLOT=0
+const.ACTIVE_START_SLOT=10
+
+# Adds a game id (stored as a 4-felt word) to the active list.
+# expects: [g0, g1, g2, g3]
+export.add_game
+    # load count
+    push.ACTIVE_COUNT_SLOT
+    exec.account::get_item
+    # stack: [cnt, g0, g1, g2, g3]
+
+    # slot = ACTIVE_START_SLOT + cnt
+    dup.4
+    push.ACTIVE_START_SLOT
+    add
+    # set word
+    movup.4
+    exec.account::set_item
+
+    # cnt += 1
+    push.1 add
+    push.ACTIVE_COUNT_SLOT
+    exec.account::set_item
+    exec.sys::truncate_stack
+end
+
+

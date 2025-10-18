@@ -19,6 +19,7 @@ import { WalletConnection } from "@/components/WalletConnection";
 import BottomNavigation from "@/components/BottomNavigation";
 import GameCard from "./gameCard";
 import Link from "next/link";
+import { getMidenContract } from "@/lib/midenAdapter";
 
 const CONNECTION =
   process.env.NEXT_PUBLIC_WEBSOCKET_URL ||
@@ -37,6 +38,7 @@ export default function PlayGame() {
   const router = useRouter();
 
   const { account: address, isConnected } = useUserAccount();
+  const { connectedAccount, requestTransaction } = useWallet();
 
   const socket = useRef<Socket | null>(null);
 
@@ -50,8 +52,8 @@ export default function PlayGame() {
   const fetchGames = async () => {
     if (contract) {
       try {
-        console.log("Fetching active games...");
-        const activeGames = await contract.getNotStartedGames();
+        console.log("Fetching active games (on-chain)...");
+        const activeGames = await contract.getActiveGames();
         console.log("Active games:", activeGames);
         setGames(activeGames);
       } catch (error) {
@@ -77,9 +79,13 @@ export default function PlayGame() {
 
       if (socket.current) {
         console.log("Socket connection established");
-        // Add listener for gameRoomCreated event
+        // Refresh on creator or server broadcast events
         socket.current.on("gameRoomCreated", () => {
-          console.log("Game room created event received"); // Add this line
+          console.log("Game room created event received");
+          fetchGames();
+        });
+        socket.current.on("createGameRoom", () => {
+          console.log("createGameRoom event received");
           fetchGames();
         });
 
@@ -87,6 +93,7 @@ export default function PlayGame() {
         return () => {
           if (socket.current) {
             socket.current.off("gameRoomCreated");
+            socket.current.off("createGameRoom");
           }
         };
       }
@@ -102,16 +109,14 @@ export default function PlayGame() {
   };
 
   const createGame = async () => {
-    console.log(contract);
-    console.log(address);
-    if (contract && address) {
+    if (contract && connectedAccount) {
       try {
         setCreateLoading(true);
 
         console.log("Creating game...");
 
         // Using Wagmi address directly with the contract
-        const tx = await contract.createGame(address as `0x${string}`);
+        const tx = await contract.createGame(connectedAccount.id);
         console.log("Transaction hash:", tx.hash);
         await tx.wait();
         console.log("Game created successfully");
@@ -240,7 +245,7 @@ export default function PlayGame() {
   const setup = async () => {
     if (address) {
       try {
-        const { contract } = await getContractNew();
+        const { contract } = getMidenContract(requestTransaction);
         setContract(contract);
       } catch (error) {
         console.error("Failed to setup contract:", error);
@@ -426,47 +431,148 @@ export default function PlayGame() {
 
           {/* Available Rooms Section */}
           <div className="mb-24">
-            <div className="flex justify-between items-center mb-2">
-              <h2 className="text-xl font-bold">Available Rooms</h2>
-              {/* <button
-                onClick={createGame}
-                disabled={createLoading}
-                className="bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 disabled:from-gray-600 disabled:to-gray-700 px-4 py-2 rounded-xl font-semibold text-sm transition-all transform hover:scale-105 active:scale-95"
+            <div className="flex justify-between items-center mb-4">
+              <div className="flex items-center space-x-3">
+                <h2 className="text-xl font-bold">Available Rooms</h2>
+                <div className="flex items-center space-x-2">
+                  <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                  <span className="text-green-400 text-sm font-medium">{games.length} Live</span>
+                </div>
+              </div>
+              <button
+                onClick={fetchGames}
+                className="p-2 rounded-xl bg-white/10 backdrop-blur-sm border border-white/20 hover:bg-white/20 transition-all duration-300"
               >
-                {createLoading ? "Creating..." : "+ Create"}
-              </button> */}
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
             </div>
             
             {games.length > 0 ? (
-              <div className="bg-gray-800/30 rounded-3xl p-4">
-                <ScrollArea className="max-h-80">
-                  <div className="space-y-3">
-                    {games.toReversed().map((gameId, index) => (
-                      <GameCard
-                        key={index}
-                        index={index}
-                        gameId={gameId}
-                        joinGame={joinGame}
-                        joinLoading={joiningGameId !== null && joiningGameId.toString() === gameId.toString()}
-                      />
-                    ))}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {games.toReversed().map((gameId, index) => (
+                  <div
+                    key={index}
+                    className="rounded-3xl relative overflow-hidden border border-white/10 transition-all duration-300 hover:border-white/20 hover:scale-[1.02] cursor-pointer"
+                    style={{
+                      background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%)',
+                      backdropFilter: 'blur(20px)',
+                      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2)'
+                    }}
+                    onClick={() => joinGame(gameId)}
+                  >
+                    {/* Glass effect overlay */}
+                    <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+                    
+                    <div className="p-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500/30 to-blue-500/30 flex items-center justify-center border border-white/20">
+                            <span className="text-xl">🎮</span>
+                          </div>
+                          <div>
+                            <h3 className="font-bold text-lg">Room #{gameId.toString().slice(-4)}</h3>
+                            <p className="text-gray-300 text-sm">Waiting for players</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                          <span className="text-green-400 text-sm font-medium">Live</span>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-4">
+                          <div className="text-center">
+                            <div className="text-2xl font-bold">1</div>
+                            <div className="text-xs text-gray-400">Players</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-2xl font-bold">2</div>
+                            <div className="text-xs text-gray-400">Max</div>
+                          </div>
+                        </div>
+                        
+                        <button
+                          disabled={joiningGameId !== null && joiningGameId.toString() === gameId.toString()}
+                          className="rounded-2xl relative overflow-hidden border border-white/20 transition-all duration-300 hover:border-white/30 hover:scale-105 active:scale-95 disabled:opacity-70 disabled:cursor-not-allowed"
+                          style={{
+                            background: 'linear-gradient(180deg, #4a9eff 0%, #0069e3 100%)',
+                            boxShadow: '0 6px 16px rgba(0, 105, 227, 0.4), inset 0 -1px 0 rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.3)'
+                          }}
+                        >
+                          {/* Glossy shine overlay */}
+                          <div className="absolute top-0 left-0 right-0 h-[50%] bg-gradient-to-b from-white/30 to-transparent rounded-t-2xl pointer-events-none"></div>
+                          
+                          <div className="relative px-6 py-3">
+                            <span className="font-semibold text-white text-sm">
+                              {joiningGameId !== null && joiningGameId.toString() === gameId.toString() ? (
+                                <div className="flex items-center space-x-2">
+                                  <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                                  <span>Joining...</span>
+                                </div>
+                              ) : (
+                                "Join Game"
+                              )}
+                            </span>
+                          </div>
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                </ScrollArea>
+                ))}
               </div>
             ) : (
-              <div className="bg-gray-800/30 rounded-3xl p-8 text-center">
-                <div className="text-gray-400 mb-4">
-                  <span className="text-4xl">🎮</span>
+              <div 
+                className="rounded-3xl relative overflow-hidden border border-white/10"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%)',
+                  backdropFilter: 'blur(20px)',
+                  boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2)'
+                }}
+              >
+                {/* Glass effect overlay */}
+                <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+                
+                <div className="p-8 text-center">
+                  <div className="mb-6">
+                    <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center border border-white/10">
+                      <span className="text-4xl">🎮</span>
+                    </div>
+                  </div>
+                  <h3 className="text-xl font-bold mb-3 bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">
+                    No Active Rooms
+                  </h3>
+                  <p className="text-gray-300 text-sm mb-6 max-w-sm mx-auto leading-relaxed">
+                    Be the first to create a room and start an epic UNO battle with other players!
+                  </p>
+                  <button
+                    onClick={createGame}
+                    disabled={createLoading}
+                    className="rounded-2xl relative overflow-hidden border border-white/20 transition-all duration-300 hover:border-white/30 hover:scale-105 active:scale-95 disabled:opacity-70 disabled:cursor-not-allowed"
+                    style={{
+                      background: 'linear-gradient(180deg, #ff5a87 0%, #e3003a 100%)',
+                      boxShadow: '0 8px 20px rgba(227, 0, 58, 0.4), inset 0 -2px 0 rgba(0, 0, 0, 0.1), inset 0 2px 0 rgba(255, 255, 255, 0.3)'
+                    }}
+                  >
+                    {/* Glossy shine overlay */}
+                    <div className="absolute top-0 left-0 right-0 h-[50%] bg-gradient-to-b from-white/30 to-transparent rounded-t-2xl pointer-events-none"></div>
+                    
+                    <div className="relative px-8 py-4">
+                      <span className="font-semibold text-white">
+                        {createLoading ? (
+                          <div className="flex items-center space-x-2">
+                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                            <span>Creating Room...</span>
+                          </div>
+                        ) : (
+                          "Create Room"
+                        )}
+                      </span>
+                    </div>
+                  </button>
                 </div>
-                <h3 className="text-lg font-semibold mb-2">No Active Rooms</h3>
-                <p className="text-gray-400 text-sm mb-4">Be the first to create a room and start playing!</p>
-                <button
-                  onClick={createGame}
-                  disabled={createLoading}
-                  className={`glossy-button glossy-button-red transition-all duration-300 ${createLoading ? 'opacity-70' : ''}`}
-                >
-                  {createLoading ? "Creating Room..." : "Create Room"}
-                </button>
               </div>
             )}
           </div>

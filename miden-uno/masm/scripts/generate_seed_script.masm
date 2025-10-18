@@ -1,5 +1,13 @@
 use.external_contract::uno_contract
+use.std::sys
 
 begin
-    call.uno_contract::generate_seed
+    # Provide a concrete seed (4 felts) and store it to slot 2
+    # For demo, reuse the same values revealed in Step 4; swap with any RNG-derived values as needed
+    push.10
+    push.20
+    push.30
+    push.40
+    call.uno_contract::set_seed
+    exec.sys::truncate_stack
 end

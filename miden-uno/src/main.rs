@@ -2,6 +2,7 @@
 
 use miden_lib::account::auth::NoAuth;
 use miden_lib::StdLibrary;
+use tokio::time::{sleep, Duration};
 use miden_objects::crypto::hash::rpo::Rpo256;
 use rand::RngCore;
 use std::{fs, path::Path, sync::Arc};
@@ -15,10 +16,11 @@ use miden_client::{
         AccountBuilder, AccountIdAddress, AccountStorageMode, AccountType, Address,
         AddressInterface, StorageSlot,
     },
+    note::{Note, NoteAssets, NoteExecutionHint, NoteInputs, NoteMetadata, NoteRecipient, NoteTag, NoteType},
     builder::ClientBuilder,
     keystore::FilesystemKeyStore,
     rpc::{Endpoint, TonicRpcClient},
-    transaction::{TransactionKernel, TransactionRequestBuilder},
+    transaction::{OutputNote, TransactionKernel, TransactionRequestBuilder},
     ClientError, Felt, ScriptBuilder,
 };
 use miden_objects::{
@@ -62,9 +64,9 @@ async fn main() -> Result<(), ClientError> {
 
 
 // -------------------------------------------------------------------------
-// STEP 1: Create a basic counter contract
+// STEP 1: Create UNO registry as a NETWORK account (shared state)
 // -------------------------------------------------------------------------
-println!("\n[STEP 1] Creating counter contract.");
+println!("\n[STEP 1] Creating UNO registry as a NETWORK account");
 
 // Prepare assembler (debug mode = true)
 let assembler: Assembler = TransactionKernel::assembler()
@@ -72,7 +74,7 @@ let assembler: Assembler = TransactionKernel::assembler()
     .with_static_library(&StdLibrary::default())
     .unwrap();
 
-// Load the MASM file for the counter contract
+// Load the MASM file for the UNO contract (serves as registry + game logic)
 let counter_path = Path::new("./masm/accounts/uno.masm");
 let counter_code = fs::read_to_string(counter_path).unwrap();
 
@@ -102,7 +104,7 @@ client.rng().fill_bytes(&mut seed);
 // Build the new `Account` with the component
 let (counter_contract, counter_seed) = AccountBuilder::new(seed)
     .account_type(AccountType::RegularAccountImmutableCode)
-    .storage_mode(AccountStorageMode::Public)
+    .storage_mode(AccountStorageMode::Network) // IMPORTANT: network storage mode
     .with_component(counter_component.clone())
     .with_auth_component(NoAuth)
     .build()
@@ -129,13 +131,14 @@ client
 
 
 // -------------------------------------------------------------------------
-// STEP 2: Call the Counter Contract with a script
+// STEP 2: Deploy network account with a state-changing script
+//         (register contract on-chain by mutating its storage)
 // -------------------------------------------------------------------------
-println!("\n[STEP 2] Call Counter Contract With Script");
+println!("\n[STEP 2] Deploy network UNO contract via state-changing script");
 
 // Load the MASM script referencing the increment procedure
-let script_path = Path::new("./masm/scripts/uno_script.masm");
-let script_code = fs::read_to_string(script_path).unwrap();
+// We'll use a tiny script that increments player count (slot 1)
+let script_code = "use.external_contract::uno_contract\n\nbegin\n    call.uno_contract::join_game\nend";
 
 let assembler: Assembler = TransactionKernel::assembler()
     .with_debug_mode(true)
@@ -160,27 +163,29 @@ let tx_increment_request = TransactionRequestBuilder::new()
     .build()
     .unwrap();
 
-// Execute the transaction locally
+// Execute the transaction on the network account
 let tx_result = client
     .new_transaction(counter_contract.id(), tx_increment_request)
     .await
     .unwrap();
 
+let _ = client.submit_transaction(tx_result.clone()).await;
+client.sync_state().await.unwrap();
+
 let tx_id = tx_result.executed_transaction().id();
 println!(
-    "View transaction on MidenScan: https://testnet.midenscan.com/tx/{:?}",
+    "Deployment tx on MidenScan: https://testnet.midenscan.com/tx/{:?}",
     tx_id
 );
 
-// Submit transaction to the network
-let _ = client.submit_transaction(tx_result).await;
-
+// Optional: small wait to ensure commit on slower networks
+sleep(Duration::from_secs(2)).await;
 client.sync_state().await.unwrap();
 
-// Retrieve updated contract data to see the incremented counter
+// Verify a state change occurred (slot 1 incremented)
 let account = client.get_account(counter_contract.id()).await.unwrap();
 println!(
-    "uno contract player count: {:?}",
+    "uno(network) player count after deploy: {:?}",
     account.unwrap().account().storage().get_item(1)
 );
 
@@ -353,6 +358,88 @@ println!(
     // STEP 7: Shuffle the deck
     // -------------------------------------------------------------------------
     println!("\n[STEP 7] Shuffling the deck");
+
+    // -------------------------------------------------------------------------
+    // STEP 8: Create a NETWORK NOTE to add a game to the registry
+    //         This demonstrates the network account + notes pattern.
+    // -------------------------------------------------------------------------
+    println!("\n[STEP 8] Creating a network note to call add_game");
+
+    // Prepare a simple note script that calls add_game with a sample game id
+    // We'll encode the gid as a word [g3,g2,g1,g0], where only g3 carries the 64-bit id
+    let gid: u64 = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() & 0xFFFF_FFFF_FFFF_FFFF) as u64;
+    let gid_script = format!(
+        "use.external_contract::uno_contract\n\nbegin\n    push.0 push.0 push.0 push.{gid}\n    call.uno_contract::add_game\nend",
+        gid = gid
+    );
+
+    let account_component_lib = create_library(
+        assembler.clone(),
+        "external_contract::uno_contract",
+        &counter_code,
+    )
+    .unwrap();
+
+    // Compile the note script with UNO library
+    let note_script = ScriptBuilder::new(true)
+        .with_dynamically_linked_library(&account_component_lib)
+        .unwrap()
+        .compile_note_script(&gid_script)
+        .unwrap();
+
+    // Create note recipient with empty inputs
+    let note_inputs = NoteInputs::new([].to_vec()).unwrap();
+    let recipient = NoteRecipient::new(client.rng().inner_mut().draw_word(), note_script, note_inputs);
+
+    // Tag the note with UNO network account id so it gets consumed by network operator
+    let tag = NoteTag::from_account_id(counter_contract.id());
+    let metadata = NoteMetadata::new(
+        counter_contract.id(),
+        NoteType::Public,
+        tag,
+        NoteExecutionHint::none(),
+        Felt::new(0),
+    )
+    .unwrap();
+
+    let network_note = Note::new(NoteAssets::default(), metadata, recipient);
+
+    // Mint the note from the UNO account itself (for demo). In production, mint from user wallet.
+    let note_req = TransactionRequestBuilder::new()
+        .own_output_notes(vec![OutputNote::Full(network_note)])
+        .build()
+        .unwrap();
+
+    let note_tx = client
+        .new_transaction(counter_contract.id(), note_req)
+        .await
+        .unwrap();
+
+    let _ = client.submit_transaction(note_tx.clone()).await;
+    let note_tx_id = note_tx.executed_transaction().id();
+    println!(
+        "Network note tx on MidenScan: https://testnet.midenscan.com/tx/{:?}",
+        note_tx_id
+    );
+
+    // Give the network builder a moment to pick up and execute the note
+    println!("Waiting for network operator to consume the note...");
+    sleep(Duration::from_secs(6)).await;
+    client.sync_state().await.unwrap();
+
+    // Verify the registry has been updated
+    if let Some(account) = client.get_account(counter_contract.id()).await.unwrap() {
+        let storage = account.account().storage();
+        let active_count = storage.get_item(7).unwrap();
+        println!("Active games count (slot 7): {:?}", active_count);
+        println!(
+            "First game slot (slot 60): {:?}",
+            storage.get_item(60).unwrap()
+        );
+    }
 
     let shuffle_deck_script_path = Path::new("./masm/scripts/shuffle_deck_script.masm");
     let shuffle_deck_script_code = fs::read_to_string(shuffle_deck_script_path).unwrap();

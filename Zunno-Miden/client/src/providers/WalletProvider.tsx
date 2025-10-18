@@ -1,29 +1,31 @@
-'use client';
-
-import { Children, ReactNode } from 'react';
-import { WagmiProvider } from 'wagmi';
+"use client";
 import {
-  WalletProvider,
-  WalletModalProvider,
   MidenWalletAdapter,
-} from '@demox-labs/miden-wallet-adapter';
-import '@demox-labs/miden-wallet-adapter/styles.css';
-import { config as wagmiConfig } from '@/lib/wagmi';
+  PrivateDataPermission,
+  WalletModalProvider,
+  WalletProvider,
+} from "@demox-labs/miden-wallet-adapter-react";
+import React, { useEffect, useState } from "react";
 
 interface WalletProviderProps {
-  children: ReactNode;
+  children: React.ReactNode;
 }
 
-const wallets = [
-  new MidenWalletAdapter({ appName: 'Zunno App' }),
-];
-
-export function WalletProvider({ children }) {
+export function CustomWalletProvider({ children }: WalletProviderProps) {
+  const [wallets, setWallets] = useState<MidenWalletAdapter[]>([]);
+  useEffect(() => {
+    const midenAdapter = new MidenWalletAdapter({
+      appName: "Miden Uno App",
+    });
+    setWallets([midenAdapter]);
+  }, []);
   return (
-    <WalletProvider wallets={wallets}>
-      <WalletModalProvider>
-        {children}
-      </WalletModalProvider>
+    <WalletProvider
+      wallets={wallets}
+      autoConnect
+      privateDataPermission={PrivateDataPermission.UponRequest}
+    >
+      <WalletModalProvider>{children}</WalletModalProvider>
     </WalletProvider>
   );
 }

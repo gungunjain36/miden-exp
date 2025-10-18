@@ -11,6 +11,7 @@ import { UnoGameContract, OffChainGameState, OnChainGameState, Card, Action, Act
 import { useUserAccount } from '@/userstate/useUserAccount';
 import { getContractNew } from '../../lib/web3'
 import { applyActionToOffChainState, hashAction, startGame, storePlayerHand, getPlayerHand, createDeck, hashCard, initializeOffChainState } from '../../lib/gameLogic'
+import { readAuditSnapshot } from '@/lib/midenAdapter'
 import { updateGlobalCardHashMap } from '../../lib/globalState';
 
 type User = { 
@@ -38,6 +39,7 @@ const Room = () => {
   const [error, setError] = useState<string | null>(null)
   const [playerToStart, setPlayerToStart] = useState<string | null>(null)
   const [playerHand, setPlayerHand] = useState<string[]>([])
+  const [audit, setAudit] = useState<any | null>(null)
 
   // Initialize computer game - simplified approach
   const initializeComputerGame = () => {
@@ -250,6 +252,7 @@ const Room = () => {
       await contract.startGame(gameId)
 
       console.log('Game started on contract')
+      try { setAudit(await readAuditSnapshot()); } catch {}
 
       console.log('Initializing local game state...')
       const newState = startGame(offChainGameState, socket)
@@ -265,6 +268,7 @@ const Room = () => {
       console.log('Action hash:', actionHash)
 
       console.log('Committing move to contract...')
+      await contract.commitMove(gameId, actionHash)
       console.log('Move committed to contract')
 
       setGameStarted(true)
